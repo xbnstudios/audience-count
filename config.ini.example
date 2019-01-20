@@ -1,0 +1,55 @@
+# Audience Counter config file
+
+# Options regarding the whole program
+[general]
+# What User-Agent header to send
+user_agent =
+
+# Options regarding RTMP stat tracking
+[rtmp]
+# A comma-separated list of remote hosts. Each host will be queried for the
+# /rtmp_status page in order to collect statistics
+edges =
+# The (HTTP Basic Auth) username to use when connecting to each host
+http_basic_username =
+# The (HTTP Basic Auth) password to use when connecting to each host
+http_basic_password =
+
+# Options regarding YouTube stat tracking
+[youtube]
+# The ID of the YouTube channel to collect live viewer metrics from
+channel_id =
+# ChilledCow lofi stream for testing
+;youtube_channel_id = UCSJ4gkVC6NrvII8umztf0Ow
+# The API Key to use when asking the YouTube API questions
+# This API key is associated with Riley's YouTube account.
+api_key =
+# How long to wait for a response from YouTube before giving up
+timeout = 10
+
+# Options regarding Icecast stat tracking
+[icecast]
+server =
+
+# Options regarding HLS stat tracking
+[hls]
+# Which method to use for counting viewers.
+# Valid values are 'ip', 'ip+uid', and 'uid'
+method = uid
+
+# Options regarding Zabbix sender data
+[zabbix]
+# Which machine should the data that this script reports be associated with in
+# Zabbix?
+client_hostname =
+
+# Database connection information
+[database]
+# The name of the database to use
+db_name =
+# The hostname of the machine to which to connect for database access
+host = localhost
+# The database username
+username =
+# The database password
+password =
