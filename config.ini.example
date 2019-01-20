@@ -4,6 +4,8 @@
 [general]
 # What User-Agent header to send
 user_agent =
+# How long to wait for a response from a remote API before giving up
+timeout = 10
 
 # Options regarding RTMP stat tracking
 [rtmp]
@@ -24,8 +26,6 @@ channel_id =
 # The API Key to use when asking the YouTube API questions
 # This API key is associated with Riley's YouTube account.
 api_key =
-# How long to wait for a response from YouTube before giving up
-timeout = 10
 
 # Options regarding Icecast stat tracking
 [icecast]

@@ -386,7 +386,7 @@ if True:
                  ytconf['channel_id'],
                  ytconf['api_key']
             ),
-            timeout=timeout
+            timeout=int(config['global']['timeout'])
         )
         videos = [item['id']['videoId'] for item in r.json()['items']]
         streamcounts = {}
@@ -400,7 +400,7 @@ if True:
                      video,
                      ytconf['api_key']
                 ),
-                timeout=int(ytconf['timeout'])
+                timeout=int(config['global']['timeout'])
             )
             # Slightly odd linebreaking here, but this is the same as if
             # all of the bracketed strings were one after the other. Written
