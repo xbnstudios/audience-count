@@ -12,7 +12,7 @@ Copy `config.ini.example` to `config.ini` and set up the credentials, and
 add the following crontab entry to run every minute:
 ```crontab
 # m h dom mon dow command
-* * * * * /path/to/audience-count/audience-count.py
+* * * * * /path/to/audience-count/audience-count.py --no-explode
 ```
 
 Clone the hls branch, and configure nginx to use the php script

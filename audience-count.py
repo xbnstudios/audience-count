@@ -4,16 +4,30 @@
 # Run once per minute by cron
 # DO NOT RENAME without also updating cron
 
+import configparser
+from datetime import datetime
+import logging
 import psycopg2
 import psycopg2.extras
 import requests
 from subprocess import run, PIPE
 from sys import argv, stdout
 import xmltodict
-import configparser
 
 config = configparser.ConfigParser()
 config.read('config.ini')
+
+log = logging.getLogger(__name__)
+if "--debug" in argv:
+    log.setLevel(logging.DEBUG)
+elif "--verbose" in argv:
+    log.setLevel(logging.INFO)
+else:
+    log.setLevel(getattr(logging, config["general"]["log_level"]))
+logging.basicConfig(level=log.getEffectiveLevel())
+rollback = "--rollback-all-tx" in argv or '-r' in argv
+yt_force_update = "--yt-update" in argv
+explodey = "--no-explode" not in argv
 
 dbconf = config['database']
 db_string = "host={} user={} password={} dbname={}".format(
@@ -31,32 +45,15 @@ s.headers = {
     "User-Agent": config['general']['user_agent']
 }
 
-debug = "--debug" in argv
-verbose = "--verbose" in argv or "-v" in argv or debug
-rollback = "--rollback-all-tx" in argv or '-r' in argv
-
-
-def vprint(*args):
-    """verbose print. Only print if 'verbose' is set."""
-    if verbose:
-        print(*args)
-
-
-def dprint(*args, **kwargs):
-    """debug print. Only print if 'debug' is set."""
-    if debug:
-        print(*args, **kwargs)
-
-
 class ViewerMetric:
     """A single metric about viewership."""
 
     def __init__(self, source: str, stream: str, viewers: int):
         """Create a new instance.
-        :source: The source from which this metric comes (icecast, youtube,
-        rtmp, hls)
-        :stream: The slug for the stream that this metric came from (xbn-360,
-        xbn-1080, xbn-flac, etc.)
+        :source: The source from which this metric comes
+            (icecast, youtube, rtmp, hls)
+        :stream: The slug for the stream that this metric came from
+            (xbn-360, xbn-1080, xbn-flac, etc.)
         :viewers: The number of viewers watching the stream
         """
         self.source = source
@@ -117,12 +114,12 @@ zbx_metrics.fill_required()
 # Aggregate data from various sources
 ###
 
-# HLS
-if True:
+# {{{ HLS
+if "hls" in config:
     try:
-        vprint("Running queries for HLS (no output)")
-        # Aggregates playlist loads into the various "views last minute" methods
-        # Note: Probably incorrect (low) for the *current minute*. viewers_latest is correct.
+        log.info("Running queries for HLS (no output)")
+        # {{{ Aggregate PL loads into various "views last minute" methods
+        # Note: Probably wrong for *current minute*. viewers_latest is correct
         cur.execute("""
             INSERT INTO viewcount (timestamp, source, stream, count, method)
             SELECT * FROM (
@@ -179,6 +176,7 @@ if True:
             ON CONFLICT ON CONSTRAINT viewcount_pkey DO
                 UPDATE SET count = EXCLUDED.count
             """)
+        # }}}
         if rollback:
             conn.rollback()
         conn.commit()
@@ -187,7 +185,7 @@ if True:
             DELETE FROM hls_pl_loads
             WHERE timestamp < NOW() - INTERVAL '12 hours'""")
 
-        # Copies the latest one into viewers_latest
+        # {{{ Copy the latest stats into viewers_latest
         cur.execute("DELETE FROM viewers_latest WHERE source = 'hls'")
         cur.execute("""
             INSERT INTO viewers_latest (source, stream, method, count)
@@ -233,6 +231,7 @@ if True:
             ) AS tmp
             GROUP BY stream
             """)
+        # }}}
         if rollback:
             conn.rollback()
         conn.commit()
@@ -248,16 +247,20 @@ if True:
             zbx_metrics.add(ViewerMetric("hls", *row))
     except Exception as e:
         conn.rollback()
-        print(e)
+        if explodey:
+            raise e
+        else:
+            log.error("Exception: %s", e)
+# }}}
 
-# RTMP
+# {{{ RTMP
 rtmp_app = "live"
-if True:
+if "rtmp" in config:
     try:
         streamcounts = {}
         edges = config['rtmp']['edges'].split(',')
         for edge in edges:
-            vprint("Fetching RTMP stats for", edge)
+            log.info("Fetching RTMP stats for %s", edge)
             r = s.get(
                 "https://" + edge + '/rtmp_status',
                 auth=(
@@ -280,7 +283,7 @@ if True:
                     viewers = int(stream['nclients']) - 1
                     if viewers < 1:
                         continue
-                    vprint("Viewers for rtmp://{}/{}/{} - {}".format(
+                    log.info("Viewers for rtmp://{}/{}/{} - {}".format(
                         edge,
                         app['name'],
                         stream['name'],
@@ -319,13 +322,17 @@ if True:
             zbx_metrics.add(ViewerMetric("rtmp", stream, count))
     except Exception as e:
         conn.rollback()
-        print(e)
+        if explodey:
+            raise e
+        else:
+            log.error("Exception: %s", e)
+# }}}
 
-# Icecast
-if True:
+# {{{ Icecast
+if "icecast" in config:
     try:
         icecast_server = config['icecast']['server']
-        vprint("Fetching stats for", icecast_server)
+        log.info("Fetching stats for %s", icecast_server)
         r = s.get(icecast_server + '/status-json.xsl')
         sources = r.json()['icestats']['source']
         streamcounts = {}
@@ -335,7 +342,7 @@ if True:
         for source in sources:
             stream = source['listenurl'].split("/")[-1]
             viewers = source['listeners']
-            vprint("Listeners for {}:".format(source['listenurl']), viewers)
+            log.info("Listeners for %s: %s", source['listenurl'], viewers)
             if viewers > 0:
                 streamcounts[stream] = viewers
         # History table
@@ -368,30 +375,44 @@ if True:
             zbx_metrics.add(ViewerMetric("icecast", stream, count))
     except Exception as e:
         conn.rollback()
-        print(e)
+        if explodey:
+            raise e
+        else:
+            log.error("Exception: %s", e)
+# }}}
 
-# Youtube
-if True:
+# {{{ Youtube
+if "youtube" in config:
     try:
         ytconf = config['youtube']
-        vprint("Fetching live videos for yt channel "
-               "https://youtube.com/channel/" + ytconf['channel_id'])
-        r = s.get(
-            ('https://www.googleapis.com/youtube/v3/search?'
-             'part=id'
-             '&channelId={}'
-             '&eventType=live'
-             '&type=video'
-             '&key={}').format(
-                 ytconf['channel_id'],
-                 ytconf['api_key']
-            ),
-            timeout=int(config['global']['timeout'])
-        )
-        videos = [item['id']['videoId'] for item in r.json()['items']]
+        if datetime.now().minute % 5 == 0 or yt_force_update:
+            log.info("Fetching live videos for yt channel "
+                   "https://youtube.com/channel/" + ytconf['channel_id'])
+            r = s.get(
+                ('https://www.googleapis.com/youtube/v3/search?'
+                 'part=id'
+                 '&safeSearch=none'
+                 '&channelId={}'
+                 '&eventType=live'
+                 '&type=video'
+                 '&key={}').format(
+                     ytconf['channel_id'],
+                     ytconf['api_key']
+                ),
+                timeout=int(config['general']['timeout'])
+            )
+            if r.status_code != 200:
+                raise Exception(("Unexpected response from YouTube Search API: "
+                        "{}\n{}".format(r.status_code, r.text)))
+            videos = [item['id']['videoId'] for item in r.json()['items']]
+        else: # Use cached video list
+            log.info("Using cached YouTube video list")
+            cur.execute(("SELECT stream FROM viewers_latest WHERE source='youtube' "
+                        "AND timestamp > NOW() - INTERVAL '10 minutes'"))
+            videos = [x[0] for x in cur]
         streamcounts = {}
         for video in videos:
-            vprint("Fetching info for https://youtu.be/"+video)
+            log.info("Fetching info for https://youtu.be/%s", video)
             r = s.get(
                 ('https://www.googleapis.com/youtube/v3/videos?'
                  'id={}'
@@ -400,8 +421,12 @@ if True:
                      video,
                      ytconf['api_key']
                 ),
-                timeout=int(config['global']['timeout'])
+                timeout=int(config['general']['timeout'])
             )
+            if r.status_code != 200:
+                raise Exception(("Unexpected response from YouTube Videos API: "
+                        "{} {}".format(r.status_code, r.text)))
+
             # Slightly odd linebreaking here, but this is the same as if
             # all of the bracketed strings were one after the other. Written
             # like this to keep the lines <79 chars, as per PEP8.
@@ -412,7 +437,7 @@ if True:
                 ['liveStreamingDetails']
                 ['concurrentViewers']
             )
-            vprint("Viewers of https://youtu.be/{}:".format(video), viewers)
+            log.info("Viewers of https://youtu.be/%s - %s", video, viewers)
             if viewers > 0:
                 streamcounts[video] = viewers
         # History table
@@ -446,29 +471,36 @@ if True:
         ))
     except Exception as e:
         conn.rollback()
-        print(e)
+        if explodey:
+            raise e
+        else:
+            log.error("Exception: %s", e)
+# }}}
 
 ###
-# Publish to Zabbix
+# {{{ Publish to Zabbix
 ###
-zbx_data = ""
-for metric in list(zbx_metrics):
-    # Create metric for the viewer count
-    zbx_data += '"{}" trapper.streams.viewers[{},{}] {}\n'.format(
-        config['zabbix']['client_hostname'],
-        metric.source,
-        metric.stream,
-        metric.viewers
+if "zabbix" in config:
+    zbx_data = ""
+    for metric in list(zbx_metrics):
+        # Create metric for the viewer count
+        zbx_data += '"{}" trapper.streams.viewers[{},{}] {}\n'.format(
+            config['zabbix']['client_hostname'],
+            metric.source,
+            metric.stream,
+            metric.viewers
+        )
+
+    log.debug("Zabbix batch data:\n%s", zbx_data)
+
+    # Shell out to zabbix_sender, because we use encryption, and
+    # that seems to be beyond the capabilities of any of the native
+    # Python libraries for Zabbix / SSL.
+    pipe = run(
+        ["zabbix_sender", "-c", "/etc/zabbix/zabbix_agentd.conf", "-i", "-"],
+        stdout=(stdout if log.isEnabledFor(logging.DEBUG) else PIPE),
+        input=zbx_data.encode('utf-8')
     )
-
-dprint("Zabbix batch data:", zbx_data, sep="\n")
-
-# Shell out to zabbix_sender, because we use encryption, and that seems to be
-# beyond the capabilities of any of the native Python libraries for Zabbix.
-pipe = run(
-    ["zabbix_sender", "-c", "/etc/zabbix/zabbix_agentd.conf", "-i", "-"],
-    stdout=(stdout if debug else PIPE),
-    input=zbx_data.encode('utf-8')
-)
+# }}}
 
 # vim: set ts=8 sw=4 tw=79 et :
