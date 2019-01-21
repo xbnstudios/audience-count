@@ -6,8 +6,6 @@
 user_agent =
 # How long to wait for a response from a remote API before giving up
 timeout = 10
-# Log verbosity level - https://docs.python.org/3/library/logging.html#levels
-log_level = DEBUG
 
 # Options regarding RTMP stat tracking
 [rtmp]

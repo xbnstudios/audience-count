@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 
 # Collects the audience statistics for the last minute
-# Run once per minute by cron
-# DO NOT RENAME without also updating cron
 
 import configparser
 from datetime import datetime
@@ -17,17 +15,36 @@ import xmltodict
 config = configparser.ConfigParser()
 config.read('config.ini')
 
+valid_flags = {
+        "--help": "Show this text",
+        "--debug": "Fill your screen with noise",
+        "--dry-run": "Don't make any changes",
+        "--yt-update": "Don't use cached YT search results",
+        "--cron": "Be quiet and don't explode on failures"
+        }
+for flag in argv[1:]:
+    if flag not in valid_flags:
+        print("Unknown flag '{}', try --help".format(flag))
+        exit(1)
+
+if "--help" in argv:
+    print("Usage: {} [arguments]".format(argv[0]))
+    for item in valid_flags.items():
+        print("\t{: <12}\t{}".format(*item))
+    exit(0)
+
+cron = "--cron" in argv
+dry_run = "--dry-run" in argv
+yt_force_update = "--yt-update" in argv
+
 log = logging.getLogger(__name__)
 if "--debug" in argv:
     log.setLevel(logging.DEBUG)
-elif "--verbose" in argv:
-    log.setLevel(logging.INFO)
+elif cron:
+    log.setLevel(logging.WARNING)
 else:
-    log.setLevel(getattr(logging, config["general"]["log_level"]))
+    log.setLevel(logging.INFO)
 logging.basicConfig(level=log.getEffectiveLevel())
-rollback = "--rollback-all-tx" in argv or '-r' in argv
-yt_force_update = "--yt-update" in argv
-explodey = "--no-explode" not in argv
 
 dbconf = config['database']
 db_string = "host={} user={} password={} dbname={}".format(
@@ -92,10 +109,10 @@ class ViewerMetricSet:
             ("rtmp", "xbn-1080"),
             ("rtmp", "xbn-720"),
             ("rtmp", "xbn-360"),
-            ("icecast", "xbn-32"),
-            ("icecast", "xbn-128"),
-            ("icecast", "xbn-320"),
             ("icecast", "xbn-flac"),
+            ("icecast", "xbn-320"),
+            ("icecast", "xbn-128"),
+            ("icecast", "xbn-32"),
             ("icecast", "xbn-mp")
         ]
         for source, stream in required:
@@ -177,7 +194,7 @@ if "hls" in config:
                 UPDATE SET count = EXCLUDED.count
             """)
         # }}}
-        if rollback:
+        if dry_run:
             conn.rollback()
         conn.commit()
         # Don't keep IP info longer than we need
@@ -232,7 +249,7 @@ if "hls" in config:
             GROUP BY stream
             """)
         # }}}
-        if rollback:
+        if dry_run:
             conn.rollback()
         conn.commit()
 
@@ -247,10 +264,10 @@ if "hls" in config:
             zbx_metrics.add(ViewerMetric("hls", *row))
     except Exception as e:
         conn.rollback()
-        if explodey:
-            raise e
-        else:
+        if cron:
             log.error("Exception: %s", e)
+        else:
+            raise e
 # }}}
 
 # {{{ RTMP
@@ -299,7 +316,7 @@ if "rtmp" in config:
             streamcounts.items(),
             template="('rtmp', %s, %s, 'live')"
         )
-        if rollback:
+        if dry_run:
             conn.rollback()
         conn.commit()
         # Current table
@@ -313,7 +330,7 @@ if "rtmp" in config:
             streamcounts.items(),
             template="('rtmp', %s, 'live', %s)"
         )
-        if rollback:
+        if dry_run:
             conn.rollback()
         conn.commit()
 
@@ -322,10 +339,10 @@ if "rtmp" in config:
             zbx_metrics.add(ViewerMetric("rtmp", stream, count))
     except Exception as e:
         conn.rollback()
-        if explodey:
-            raise e
-        else:
+        if cron:
             log.error("Exception: %s", e)
+        else:
+            raise e
 # }}}
 
 # {{{ Icecast
@@ -352,7 +369,7 @@ if "icecast" in config:
             streamcounts.items(),
             template="('icecast', %s, %s, 'live')"
         )
-        if rollback:
+        if dry_run:
             conn.rollback()
         conn.commit()
         # Current table
@@ -366,7 +383,7 @@ if "icecast" in config:
             streamcounts.items(),
             template="('icecast', %s, 'live', %s)"
         )
-        if rollback:
+        if dry_run:
             conn.rollback()
         conn.commit()
 
@@ -375,10 +392,10 @@ if "icecast" in config:
             zbx_metrics.add(ViewerMetric("icecast", stream, count))
     except Exception as e:
         conn.rollback()
-        if explodey:
-            raise e
-        else:
+        if cron:
             log.error("Exception: %s", e)
+        else:
+            raise e
 # }}}
 
 # {{{ Youtube
@@ -447,6 +464,8 @@ if "youtube" in config:
             streamcounts.items(),
             template="('youtube', %s, %s, 'live')"
         )
+        if dry_run:
+            conn.rollback()
         conn.commit()
         # Current table
         cur.execute("DELETE FROM viewers_latest WHERE source = 'youtube'")
@@ -459,7 +478,7 @@ if "youtube" in config:
             streamcounts.items(),
             template="('youtube', %s, 'live', %s)"
         )
-        if rollback:
+        if dry_run:
             conn.rollback()
         conn.commit()
 
@@ -471,10 +490,10 @@ if "youtube" in config:
         ))
     except Exception as e:
         conn.rollback()
-        if explodey:
-            raise e
-        else:
+        if cron:
             log.error("Exception: %s", e)
+        else:
+            raise e
 # }}}
 
 ###
@@ -496,10 +515,13 @@ if "zabbix" in config:
     # Shell out to zabbix_sender, because we use encryption, and
     # that seems to be beyond the capabilities of any of the native
     # Python libraries for Zabbix / SSL.
-    pipe = run(
-        ["zabbix_sender", "-c", "/etc/zabbix/zabbix_agentd.conf", "-i", "-"],
-        stdout=(stdout if log.isEnabledFor(logging.DEBUG) else PIPE),
-        input=zbx_data.encode('utf-8')
+    if not dry_run:
+        pipe = run(
+            ["zabbix_sender",
+                "-c", "/etc/zabbix/zabbix_agentd.conf",
+                "-i", "-"],
+            stdout=(stdout if log.isEnabledFor(logging.DEBUG) else PIPE),
+            input=zbx_data.encode('utf-8')
     )
 # }}}
 
