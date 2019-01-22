@@ -402,7 +402,7 @@ if "icecast" in config:
 if "youtube" in config:
     try:
         ytconf = config['youtube']
-        if datetime.now().minute % 5 == 0 or yt_force_update:
+        if datetime.now().minute % 15 == 0 or yt_force_update:
             log.info("Fetching live videos for yt channel "
                    "https://youtube.com/channel/" + ytconf['channel_id'])
             r = s.get(
