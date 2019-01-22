@@ -351,7 +351,7 @@ if "icecast" in config:
         icecast_server = config['icecast']['server']
         log.info("Fetching stats for %s", icecast_server)
         r = s.get(icecast_server + '/status-json.xsl')
-        sources = r.json()['icestats']['source']
+        sources = r.json()['icestats'].get('source', [])
         streamcounts = {}
         # If there's only one stream, it's just the object
         if isinstance(sources, dict):
