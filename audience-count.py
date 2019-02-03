@@ -17,7 +17,7 @@ config = configparser.ConfigParser()
 configpath = path.join(path.dirname(path.realpath(__file__)), "config.ini")
 config.read(configpath)
 if "database" not in config:
-    print("Invalid or nonexistent ({})".format(configpath))
+    print("Invalid or nonexistent config ({})".format(configpath))
     exit(4)
 
 valid_flags = {
