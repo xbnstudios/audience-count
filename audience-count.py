@@ -5,6 +5,7 @@
 import configparser
 from datetime import datetime
 import logging
+from os import path
 import psycopg2
 import psycopg2.extras
 import requests
@@ -13,7 +14,11 @@ from sys import argv, stdout
 import xmltodict
 
 config = configparser.ConfigParser()
-config.read('config.ini')
+configpath = path.join(path.dirname(path.realpath(__file__)), "config.ini")
+config.read(configpath)
+if "database" not in config:
+    print("Invalid or nonexistent ({})".format(configpath))
+    exit(4)
 
 valid_flags = {
         "--help": "Show this text",
@@ -402,7 +407,33 @@ if "icecast" in config:
 if "youtube" in config:
     try:
         ytconf = config['youtube']
-        if datetime.now().minute % 15 == 0 or yt_force_update:
+
+        # YouTube's useless API doesn't provide any better way to get a list of
+        # a channel's current live videos than the search API, which has a
+        # quota cost of 100 (search) + 2ish (?????). The current quota is 10k
+        # "queries", so limits us to checking every ~15 min avg. So, we try to
+        # keep it slow except when we think something just started.
+
+        # "Has rtmp->xbn-1080 existed for the first time in 30m, in the last 5m?"
+        cur.execute("""
+                SELECT MIN(timestamp) > NOW() - INTERVAL '5 minute'
+                FROM viewcount WHERE source = 'rtmp' AND stream = 'xbn-1080'
+                    AND timestamp > now() - interval '30 minute'""")
+        yt_hint = cur.fetchone()[0]
+        log.debug("Is rtmp->xbn-1080 fresh? {}".format(yt_hint))
+
+        # Get the list of known YT streams
+        cur.execute(("SELECT stream FROM viewers_latest WHERE source='youtube' "
+                    "AND timestamp > NOW() - INTERVAL '10 minutes'"))
+        videos = [x[0] for x in cur]
+        log.debug("Existing YT streams: {}".format(len(videos)))
+
+        # Only do the search call if:
+        # - It's :00 :20 or :40
+        # - Or user said --yt-update
+        # - Or rtmp->xbn-1080 is fresh and we have <1 YT stream cached
+        if (datetime.now().minute % 20 == 0 or yt_force_update or
+                    (yt_hint and yt_last_stream_count < 1)):
             log.info("Fetching live videos for yt channel "
                    "https://youtube.com/channel/" + ytconf['channel_id'])
             r = s.get(
@@ -424,9 +455,8 @@ if "youtube" in config:
             videos = [item['id']['videoId'] for item in r.json()['items']]
         else: # Use cached video list
             log.info("Using cached YouTube video list")
-            cur.execute(("SELECT stream FROM viewers_latest WHERE source='youtube' "
-                        "AND timestamp > NOW() - INTERVAL '10 minutes'"))
-            videos = [x[0] for x in cur]
+
+        # For each stream, get the viewer count from the API (cost = ~2)
         streamcounts = {}
         for video in videos:
             log.info("Fetching info for https://youtu.be/%s", video)
@@ -444,19 +474,14 @@ if "youtube" in config:
                 raise Exception(("Unexpected response from YouTube Videos API: "
                         "{} {}".format(r.status_code, r.text)))
 
-            # Slightly odd linebreaking here, but this is the same as if
-            # all of the bracketed strings were one after the other. Written
-            # like this to keep the lines <79 chars, as per PEP8.
-            viewers = int(
-                r.json()
-                ['items']
-                [0]
-                ['liveStreamingDetails']
-                ['concurrentViewers']
-            )
-            log.info("Viewers of https://youtu.be/%s - %s", video, viewers)
-            if viewers > 0:
-                streamcounts[video] = viewers
+            items = r.json()['items']
+            if len(items) > 0:
+                viewers = int(
+                        items[0]['liveStreamingDetails']['concurrentViewers'])
+                log.info("Viewers of https://youtu.be/%s - %s", video, viewers)
+                if viewers > 0:
+                    streamcounts[video] = viewers
+
         # History table
         psycopg2.extras.execute_values(
             cur,
@@ -467,7 +492,8 @@ if "youtube" in config:
         if dry_run:
             conn.rollback()
         conn.commit()
-        # Current table
+
+        # Current values table
         cur.execute("DELETE FROM viewers_latest WHERE source = 'youtube'")
         psycopg2.extras.execute_values(
             cur,
