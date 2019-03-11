@@ -41,3 +41,8 @@ And each edge needs an rtmp status endpoint:
         auth_basic_user_file /etc/nginx/htpasswd_rtmp_status;
     }
 ```
+
+Import the database schema:
+```bash
+psql -U app_psql_user -d app_db_name -f schema.sql
+```
